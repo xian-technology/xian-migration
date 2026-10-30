@@ -6,10 +6,11 @@ import pytest
 import xian_vm_core
 from contracting.storage.driver import Driver
 from test_legacy_genesis import _legacy_export_data, _options
+from xian.utils.block import apply_state_changes_from_block
 from xian_runtime_types.encoding import decode, encode
 from xian_runtime_types.time import Datetime
 
-from xian.legacy_genesis import (
+from xian_migration.genesis import (
     LegacyMigrationError,
     _ReplayClient,
     _ReplayNonces,
@@ -17,7 +18,6 @@ from xian.legacy_genesis import (
     parse_legacy_export,
     verify_migration_genesis,
 )
-from xian.utils.block import apply_state_changes_from_block
 
 COLLIDING_EXPORT = """
 __burn = Hash(default_value=False, contract='con_collision', name='burn')

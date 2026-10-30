@@ -1,5 +1,8 @@
 # Legacy Chain Migration
 
+Install the pinned standalone package as described in the root README.
+The target network, contracts directory and runtime features are explicit CLI inputs.
+
 `xian-legacy-genesis` builds a `genesis.json` for this runtime from the state of
 a legacy (pre-VM, CPython-engine) Xian chain. The legacy node's
 `xian/tools/export_state.py` writes the input, `exported_state.json`: every
@@ -9,9 +12,11 @@ contract key/value pair (`genesis`) plus every sender nonce (`nonces`).
 uv run xian-legacy-genesis \
   --export exported_state.json \
   --export-sha256 <sha256 of the export, published by whoever took it> \
-  --chain-id xian-2 \
+  --chain-id xian-migration-local \
   --genesis-time 2026-11-01T00:00:00Z \
-  --network mainnet \
+  --network local \
+  --contracts-dir ../xian-configs/contracts \
+  --runtime-features '{"zk": false}' \
   --output genesis.json \
   --sources-dir migrated-sources/
 ```
@@ -33,7 +38,7 @@ validator should rebuild the genesis independently and compare the
 ### User contracts
 
 The legacy engine stored a transformed module under `<name>.__code__`, not the
-authored source. `xian.legacy_source.recover_legacy_source` inverts that
+authored source. `xian_migration.source.recover_legacy_source` inverts that
 transform exactly (export decorators, the `____` constructor, `__`-prefixed
 private functions and ORM objects, injected `contract=`/`name=` arguments). The
 recovered source is compiled with the normal linter into `xian_vm_v1`

@@ -16,3 +16,5 @@ graphify-out/
 exported_state*.json
 genesis*.json
 migrated-sources/
+coverage/
+.coverage.*

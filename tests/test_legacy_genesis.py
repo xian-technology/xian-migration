@@ -1,6 +1,7 @@
 import copy
 import hashlib
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -8,7 +9,7 @@ from pathlib import Path
 from legacy_fixtures import LEGACY_TOKEN
 from xian_runtime_types.encoding import decode, encode
 
-from xian.legacy_genesis import (
+from xian_migration.genesis import (
     LegacyMigrationError,
     LegacyMigrationOptions,
     build_legacy_migration_genesis,
@@ -17,7 +18,12 @@ from xian.legacy_genesis import (
     verify_migration_genesis,
 )
 
-CONTRACTS_DIR = Path(__file__).resolve().parents[3] / "xian-configs" / "contracts"
+CONTRACTS_DIR = Path(
+    os.environ.get(
+        "XIAN_MIGRATION_CONTRACTS_DIR",
+        Path(__file__).resolve().parents[2] / "xian-configs" / "contracts",
+    )
+)
 NODE = "a" * 64
 HOLDER = "b" * 64
 SPENDER_OWNER = "c" * 64
@@ -83,12 +89,12 @@ def _legacy_export_data():
 
 
 def _options(**overrides):
-    values = dict(
-        chain_id="xian-migrated-test",
-        genesis_time="2026-11-01T00:00:00Z",
-        network="local",
-        contracts_dir=CONTRACTS_DIR,
-    )
+    values = {
+        "chain_id": "xian-migrated-test",
+        "genesis_time": "2026-11-01T00:00:00Z",
+        "network": "local",
+        "contracts_dir": CONTRACTS_DIR,
+    }
     values.update(overrides)
     return LegacyMigrationOptions(**values)
 
@@ -162,7 +168,8 @@ class LegacyGenesisTests(unittest.TestCase):
         self.assertNotIn("stamp_cost.__source__", self.state)
         retired = self.result.report["system_contracts"]["masternodes"]
         self.assertEqual(
-            retired["holdings_refunded_to_depositors"], {HOLDER: "100000", NODE: "100000"}
+            retired["holdings_refunded_to_depositors"],
+            {HOLDER: "100000", NODE: "100000"},
         )
 
     def test_validators_and_foundation_owner_come_from_legacy_state(self):
@@ -217,6 +224,114 @@ class LegacyGenesisTests(unittest.TestCase):
         data["genesis"].append({"key": "con_orphan.balances:x", "value": 1})
         with self.assertRaisesRegex(LegacyMigrationError, "no __code__"):
             parse_legacy_export(data)
+
+
+class ExplicitBundleTests(unittest.TestCase):
+    def test_network_and_contract_directory_are_required(self):
+        base = {"chain_id": "migration-test", "genesis_time": "2026-11-01T00:00:00Z"}
+        with self.assertRaisesRegex(TypeError, "network.*contracts_dir"):
+            LegacyMigrationOptions(**base)
+        with self.assertRaisesRegex(TypeError, "contracts_dir"):
+            LegacyMigrationOptions(**base, network="local")
+        with self.assertRaisesRegex(TypeError, "network"):
+            LegacyMigrationOptions(**base, contracts_dir=CONTRACTS_DIR)
+
+    def test_missing_explicit_bundle_does_not_fall_back_to_sibling(self):
+        export = parse_legacy_export(decode(encode(_legacy_export_data())))
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaises(FileNotFoundError):
+                build_legacy_migration_genesis(export, _options(contracts_dir=Path(directory)))
+
+    def test_none_contract_directory_does_not_select_default(self):
+        export = parse_legacy_export(decode(encode(_legacy_export_data())))
+        with self.assertRaises(TypeError):
+            build_legacy_migration_genesis(export, _options(contracts_dir=None))
+
+    def test_relative_explicit_path_is_not_rewritten_on_options(self):
+        export = parse_legacy_export(decode(encode(_legacy_export_data())))
+        options = _options(contracts_dir=Path(os.path.relpath(CONTRACTS_DIR)))
+        original = options.contracts_dir
+        result = build_legacy_migration_genesis(export, options)
+        self.assertEqual(options.contracts_dir, original)
+        self.assertEqual(result.report["target"]["network_bundle"], "local")
+
+
+class LegacyExportBoundaryTests(unittest.TestCase):
+    def test_invalid_shapes_and_missing_code_are_rejected(self):
+        for data in [None, [], {}, {"genesis": {}}, {"genesis": []}]:
+            with self.subTest(data=data), self.assertRaises(LegacyMigrationError):
+                parse_legacy_export(data)
+        for key in ["currency", "currency.", "__n.sender:"]:
+            with (
+                self.subTest(key=key),
+                self.assertRaisesRegex(LegacyMigrationError, "unexpected key"),
+            ):
+                parse_legacy_export({"genesis": [{"key": key, "value": 1}]})
+
+    def test_nonce_validation_and_legacy_delimiter(self):
+        data = _legacy_export_data()
+        data["nonces"] = [{"key": HOLDER + ":", "value": 3}]
+        self.assertEqual(parse_legacy_export(data).nonces, {HOLDER: 3})
+        for nonce in [-1, True, 1.5, "1"]:
+            data["nonces"] = [{"key": HOLDER, "value": nonce}]
+            with (
+                self.subTest(nonce=nonce),
+                self.assertRaisesRegex(LegacyMigrationError, "invalid nonce"),
+            ):
+                parse_legacy_export(data)
+        data["nonces"] = [{"key": HOLDER, "value": 1}, {"key": HOLDER + ":", "value": 1}]
+        with self.assertRaisesRegex(LegacyMigrationError, "duplicate nonce"):
+            parse_legacy_export(data)
+
+
+class MigrationVerificationTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        data = _legacy_export_data()
+        data["genesis"].append({"key": "currency.balances:empty_account", "value": 0})
+        cls.export = parse_legacy_export(decode(encode(data)))
+        cls.result = build_legacy_migration_genesis(cls.export, _options())
+
+    def changed_genesis(self, key, value=None, *, remove=False):
+        from xian.state_root import compute_exported_state_root
+
+        genesis = copy.deepcopy(self.result.genesis)
+        entries = genesis["abci_genesis"]["genesis"]
+        if remove:
+            entries[:] = [entry for entry in entries if entry["key"] != key]
+        else:
+            next(entry for entry in entries if entry["key"] == key)["value"] = value
+        # A valid app hash is necessary but does not prove migration fidelity.
+        root = compute_exported_state_root(genesis["abci_genesis"]).hex()
+        genesis["abci_genesis"]["hash"] = root
+        genesis["app_hash"] = root
+        return genesis
+
+    def test_changed_user_state_is_rejected_even_with_consistent_hash(self):
+        genesis = self.changed_genesis(f"con_tok.balances:{HOLDER}", 99)
+        with self.assertRaisesRegex(LegacyMigrationError, "value con_tok.balances"):
+            verify_migration_genesis(genesis, self.export, self.result.report)
+
+    def test_missing_native_artifact_is_rejected_even_when_source_exists(self):
+        genesis = self.changed_genesis("con_tok.__xian_ir_v1__", remove=True)
+        with self.assertRaisesRegex(LegacyMigrationError, "has no xian_vm_v1 artifacts"):
+            verify_migration_genesis(genesis, self.export, self.result.report)
+
+    def test_absent_zero_balance_is_equivalent_to_legacy_zero(self):
+        genesis = self.changed_genesis("currency.balances:empty_account", remove=True)
+        verification = verify_migration_genesis(genesis, self.export, self.result.report)
+        self.assertEqual(verification["app_hash"], genesis["app_hash"])
+
+    def test_initial_height_must_be_positive_and_one_is_valid(self):
+        for height in (0, -1):
+            with (
+                self.subTest(height=height),
+                self.assertRaisesRegex(LegacyMigrationError, "at least 1"),
+            ):
+                build_legacy_migration_genesis(self.export, _options(initial_height=height))
+        result = build_legacy_migration_genesis(self.export, _options(initial_height=1))
+        self.assertEqual(result.genesis["initial_height"], "1")
+        self.assertEqual(result.genesis["abci_genesis"]["number"], "0")
 
 
 if __name__ == "__main__":

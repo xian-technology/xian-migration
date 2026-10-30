@@ -7,7 +7,7 @@ from pathlib import Path
 
 from xian_runtime_types.encoding import encode
 
-from xian.legacy_genesis import (
+from xian_migration.genesis import (
     LegacyMigrationError,
     LegacyMigrationOptions,
     LegacyValidator,
@@ -15,7 +15,7 @@ from xian.legacy_genesis import (
     load_legacy_export,
     verify_migration_genesis,
 )
-from xian.legacy_source import COMPAT_REWRITES
+from xian_migration.source import COMPAT_REWRITES
 
 
 def _parse_validator(value: str) -> LegacyValidator:
@@ -49,12 +49,14 @@ def build_parser() -> ArgumentParser:
         "party rebuilding the genesis gets the same app hash.",
     )
     parser.add_argument(
-        "--network", default="mainnet", help="Network contract bundle (contracts_<network>.json)"
+        "--network", required=True, help="Network contract bundle (contracts_<network>.json)"
     )
-    parser.add_argument("--contracts-dir", help="Directory holding the contract bundles")
+    parser.add_argument(
+        "--contracts-dir", required=True, help="Directory holding the contract bundles"
+    )
     parser.add_argument(
         "--runtime-features",
-        default='{"zk": true}',
+        required=True,
         help="JSON object of genesis runtime features",
     )
     parser.add_argument(
@@ -108,14 +110,13 @@ def build_parser() -> ArgumentParser:
     return parser
 
 
-def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+def _options(args) -> LegacyMigrationOptions:
     overrides = dict(_parse_override(value) for value in args.source_override)
-    options = LegacyMigrationOptions(
+    return LegacyMigrationOptions(
         chain_id=args.chain_id,
         genesis_time=args.genesis_time,
         network=args.network,
-        contracts_dir=Path(args.contracts_dir) if args.contracts_dir else None,
+        contracts_dir=Path(args.contracts_dir),
         runtime_features=json.loads(args.runtime_features),
         initial_height=args.initial_height,
         founder_private_key=args.founder_key,
@@ -129,14 +130,23 @@ def main(argv: list[str] | None = None) -> int:
         refund_masternode_holdings=not args.keep_masternode_holdings,
     )
 
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
     try:
+        options = _options(args)
         export = load_legacy_export(Path(args.export), expected_sha256=args.export_sha256)
         result = build_legacy_migration_genesis(export, options)
         verification = verify_migration_genesis(result.genesis, export, result.report)
-    except LegacyMigrationError as exc:
+    except (LegacyMigrationError, ValueError, OSError) as exc:
         print(f"legacy migration failed: {exc}", file=sys.stderr)
         return 1
 
+    _write_outputs(args, result, verification)
+    return 0
+
+
+def _write_outputs(args, result, verification) -> None:
     result.report["verification"] = verification
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -158,7 +168,6 @@ def main(argv: list[str] | None = None) -> int:
     print(f"supply:    {summary['currency_supply']}")
     for warning in result.report["warnings"]:
         print(f"warning:   {warning}")
-    return 0
 
 
 if __name__ == "__main__":

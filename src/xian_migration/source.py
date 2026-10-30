@@ -249,6 +249,16 @@ def _plain_formatted_value(value: ast.AST) -> bool:
     )
 
 
+def _concat_part(value: ast.expr) -> ast.expr:
+    if isinstance(value, ast.FormattedValue):
+        return ast.Call(
+            func=ast.Name(id="str", ctx=ast.Load()),
+            args=[value.value],
+            keywords=[],
+        )
+    return value
+
+
 class _FStringToConcat(ast.NodeTransformer):
     """Rewrite f-strings whose fields contain string literals into concatenation.
 
@@ -269,23 +279,8 @@ class _FStringToConcat(ast.NodeTransformer):
         if not all(_plain_formatted_value(field) for field in fields):
             return node
 
-        parts: list[ast.expr] = []
-        for value in node.values:
-            if isinstance(value, ast.FormattedValue):
-                parts.append(
-                    ast.Call(
-                        func=ast.Name(id="str", ctx=ast.Load()),
-                        args=[value.value],
-                        keywords=[],
-                    )
-                )
-            else:
-                parts.append(value)
-        if not parts:
-            return node
-        if not (isinstance(parts[0], ast.Constant) and isinstance(parts[0].value, str)):
-            parts.insert(0, ast.Constant(value=""))
-
+        # The qualifying field above guarantees at least one part.
+        parts = [_concat_part(value) for value in node.values]
         expression = parts[0]
         for part in parts[1:]:
             expression = ast.BinOp(left=expression, op=ast.Add(), right=part)

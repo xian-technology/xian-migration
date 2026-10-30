@@ -4,7 +4,7 @@ import unittest
 from contracting.artifacts import build_contract_artifacts
 from legacy_fixtures import LEGACY_TOKEN
 
-from xian.legacy_source import (
+from xian_migration.source import (
     LegacySourceError,
     apply_compat_rewrites,
     recover_legacy_source,
@@ -70,6 +70,31 @@ class RecoverLegacySourceTests(unittest.TestCase):
         with self.assertRaisesRegex(LegacySourceError, "unexpected decorator"):
             recover_legacy_source("con_x", "@other\ndef f():\n    pass\n")
 
+    def test_invalid_source_and_ambiguous_declarations_are_refused(self):
+        cases = [
+            ("def broken(", "legacy code does not parse"),
+            ("def ____():\n    pass\ndef ____():\n    pass\n", "multiple constructors"),
+            ("@a\n@b\ndef f():\n    pass\n", "multiple decorators"),
+        ]
+        for source, message in cases:
+            with self.subTest(message=message):
+                with self.assertRaisesRegex(LegacySourceError, message):
+                    recover_legacy_source("con_x", source)
+
+    def test_collision_resolution_avoids_existing_suffixed_names(self):
+        legacy = (
+            "def __mean(v: list):\n    return v[0]\n"
+            "@__export('con_m')\n"
+            "def calculate(mean: list, mean_private: int, mean_private2: int):\n"
+            "    return __mean(mean) + mean_private + mean_private2\n"
+        )
+        recovered = recover_legacy_source("con_m", legacy, resolve_collisions=True)
+        self.assertEqual(recovered.collision_renames, {"__mean": "mean_private3"})
+        self.assertIn("return mean_private3(mean) + mean_private + mean_private2", recovered.source)
+        build_contract_artifacts(
+            module_name="con_m", source=recovered.source, lint=True, vm_profile="xian_vm_v1"
+        )
+
     def test_variable_collision_also_preserves_storage_identity(self):
         legacy = (
             "__owner = Variable(contract='con_v', name='owner')\n"
@@ -96,6 +121,51 @@ class RecoverLegacySourceTests(unittest.TestCase):
 
 
 class CompatRewriteTests(unittest.TestCase):
+    def test_rewrite_preserves_text_and_left_to_right_field_evaluation(self):
+        for prefix in ("", "prefix "):
+            with self.subTest(prefix=prefix):
+                source = f"result = f\"{prefix}{{read('first')}}:{{read('second')}}\"\n"
+                events = []
+
+                def read(key):
+                    events.append(key)
+                    return {"first": 12, "second": None}[key]
+
+                original = {"read": read}
+                exec(source, original)
+                expected_events = events[:]
+                events.clear()
+                rewritten, applied = apply_compat_rewrites(
+                    source, allowed={"fstring_string_literals"}
+                )
+                actual = {"read": read}
+                exec(rewritten, actual)
+                self.assertEqual(actual["result"], original["result"])
+                self.assertEqual(events, expected_events)
+                self.assertEqual(events, ["first", "second"])
+                self.assertEqual(applied, {"fstring_string_literals": 1})
+                self.assertEqual(
+                    apply_compat_rewrites(rewritten, allowed={"fstring_string_literals"}),
+                    (rewritten, {}),
+                )
+
+    def test_rewrites_are_opt_in_and_leave_unsupported_or_unnecessary_fields_alone(self):
+        sources = [
+            'result = f"{value}"\n',
+            'result = f"plain text"\n',
+            "result = f\"{read('key')!r}\"\n",
+            "result = f\"{read('key')!s}\"\n",
+            "result = f\"{read('key')!a}\"\n",
+        ]
+        for source in sources:
+            with self.subTest(source=source):
+                self.assertEqual(
+                    apply_compat_rewrites(source, allowed={"fstring_string_literals"}),
+                    (source, {}),
+                )
+        source = "result = f\"{read('key')}\"\n"
+        self.assertEqual(apply_compat_rewrites(source, allowed=set()), (source, {}))
+
     def test_fstring_with_string_literal_becomes_equivalent_concat(self):
         source = (
             "data = Hash()\n\n"

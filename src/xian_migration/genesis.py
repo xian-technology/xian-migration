@@ -37,30 +37,29 @@ from contracting import constants as contracting_constants
 from contracting.artifacts import build_contract_artifacts
 from contracting.names import is_safe_contract_name
 from contracting.storage.driver import Driver
-from xian_runtime_types.decimal import ContractingDecimal
-from xian_runtime_types.encoding import decode, encode
-from xian_runtime_types.time import Datetime
-
 from xian.constants import Constants
 from xian.genesis_builder import (
     DEFAULT_PRESET_GENESIS_PRIVATE_KEY,
-    _genesis_submission_time,
-    _normalize_genesis_time,
     build_cometbft_genesis,
     build_validator_genesis_entry_from_public_key,
     deploy_bundle_contracts,
     finalize_genesis_block,
     load_contract_bundle_config,
-    resolve_contracts_dir,
+    normalize_genesis_time,
+    parse_genesis_time,
 )
-from xian.legacy_source import (
+from xian.state_root import StateRootCache
+from xian.utils.block import apply_state_changes_from_block
+from xian_runtime_types.decimal import ContractingDecimal
+from xian_runtime_types.encoding import decode, encode
+from xian_runtime_types.time import Datetime
+
+from xian_migration.source import (
     COMPAT_REWRITES,
     LegacySourceError,
     apply_compat_rewrites,
     recover_legacy_source,
 )
-from xian.state_root import StateRootCache
-from xian.utils.block import apply_state_changes_from_block
 
 INDEX_SEPARATOR = contracting_constants.INDEX_SEPARATOR
 DELIMITER = contracting_constants.DELIMITER
@@ -135,13 +134,16 @@ def load_legacy_export(path: Path, *, expected_sha256: str | None = None) -> Leg
     return parse_legacy_export(decode(raw.decode("utf-8")), sha256=digest)
 
 
-def parse_legacy_export(data: dict[str, Any], *, sha256: str = "") -> LegacyExport:
-    if not isinstance(data, dict) or not isinstance(data.get("genesis"), list):
-        raise LegacyMigrationError("legacy export must be an object with a 'genesis' list")
+def _require_contract_code(contracts: dict[str, LegacyContract]) -> None:
+    for name, contract in contracts.items():
+        if contract.code is None:
+            raise LegacyMigrationError(f"legacy contract {name!r} has state but no __code__")
 
+
+def _parse_contracts(entries: list[dict[str, Any]]) -> dict[str, LegacyContract]:
     contracts: dict[str, LegacyContract] = {}
     seen: set[str] = set()
-    for entry in data["genesis"]:
+    for entry in entries:
         key = entry["key"]
         if key in seen:
             raise LegacyMigrationError(f"duplicate key in legacy export: {key}")
@@ -151,29 +153,30 @@ def parse_legacy_export(data: dict[str, Any], *, sha256: str = "") -> LegacyExpo
             raise LegacyMigrationError(f"unexpected key in legacy export: {key!r}")
         contract = contracts.setdefault(contract_name, LegacyContract(name=contract_name))
         value = entry["value"]
-        if variable == LEGACY_CODE_KEY:
-            contract.code = value
-        elif variable == LEGACY_OWNER_KEY:
-            contract.owner = value
-        elif variable == LEGACY_DEVELOPER_KEY:
-            contract.developer = value
-        elif variable == LEGACY_SUBMITTED_KEY:
-            contract.submitted = value
-        else:
+        field_name = {
+            LEGACY_CODE_KEY: "code",
+            LEGACY_OWNER_KEY: "owner",
+            LEGACY_DEVELOPER_KEY: "developer",
+            LEGACY_SUBMITTED_KEY: "submitted",
+        }.get(variable)
+        if field_name is None:
             contract.state[variable] = value
+        else:
+            setattr(contract, field_name, value)
 
-    for name, contract in contracts.items():
-        if contract.code is None:
-            raise LegacyMigrationError(f"legacy contract {name!r} has state but no __code__")
+    _require_contract_code(contracts)
     if not contracts:
         raise LegacyMigrationError("legacy export contains no contracts")
 
+    return contracts
+
+
+def _parse_nonces(entries: list[dict[str, Any]]) -> dict[str, int]:
     nonces: dict[str, int] = {}
-    for entry in data.get("nonces", []):
+    for entry in entries:
         sender = entry["key"]
         # Legacy exports strip the run-state delimiter; accept either form.
-        if sender.endswith(DELIMITER):
-            sender = sender[: -len(DELIMITER)]
+        sender = sender.removesuffix(DELIMITER)
         value = entry["value"]
         if not SENDER_PATTERN.fullmatch(sender):
             raise LegacyMigrationError(f"unexpected nonce sender: {sender!r}")
@@ -182,6 +185,16 @@ def parse_legacy_export(data: dict[str, Any], *, sha256: str = "") -> LegacyExpo
         if sender in nonces:
             raise LegacyMigrationError(f"duplicate nonce sender: {sender}")
         nonces[sender] = value
+
+    return nonces
+
+
+def parse_legacy_export(data: dict[str, Any], *, sha256: str = "") -> LegacyExport:
+    if not isinstance(data, dict) or not isinstance(data.get("genesis"), list):
+        raise LegacyMigrationError("legacy export must be an object with a 'genesis' list")
+
+    contracts = _parse_contracts(data["genesis"])
+    nonces = _parse_nonces(data.get("nonces", []))
 
     return LegacyExport(
         source_hash=str(data.get("hash", "")),
@@ -207,8 +220,8 @@ class LegacyValidator:
 class LegacyMigrationOptions:
     chain_id: str
     genesis_time: str
-    network: str = "mainnet"
-    contracts_dir: Path | None = None
+    network: str
+    contracts_dir: Path
     runtime_features: dict[str, Any] | None = None
     # None keeps legacy numbering: first new block = legacy height + 1
     initial_height: int | None = None
@@ -255,7 +268,9 @@ def _jsonable(value: Any) -> Any:
 # --- System contract adapters -----------------------------------------------
 
 
-def _currency_balance_entries(state: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+def _currency_balance_entries(
+    state: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
     """Split legacy ``balances`` into account balances and allowances.
 
     Legacy currency stored allowances as ``balances:<owner>:<spender>``; the
@@ -397,7 +412,7 @@ class _Builder:
                 raise
             rewritten, applied = apply_compat_rewrites(source, allowed=self.options.compat_rewrites)
             if not applied:
-                raise first_error
+                raise
             artifacts = build_contract_artifacts(
                 module_name=name, source=rewritten, lint=True, vm_profile="xian_vm_v1"
             )
@@ -465,24 +480,28 @@ class _Builder:
         if name == CURRENCY_CONTRACT:
             self.migrate_currency(contract, entry)
         else:
-            copied, conflicts = 0, {}
-            for variable, value in contract.state.items():
-                key = f"{name}{INDEX_SEPARATOR}{variable}"
-                current = self.driver.get(key)
-                if current is not None:
-                    if encode(current) != encode(value):
-                        conflicts[variable] = {
-                            "bundle": _jsonable(current),
-                            "legacy": _jsonable(value),
-                        }
-                    continue
-                self.set(key, value)
-                copied += 1
+            copied, conflicts = self.copy_unset_system_state(name, contract.state)
             entry["copied_keys"] = copied
             if conflicts:
                 entry["bundle_value_kept"] = conflicts
         self.accounted_keys += len(contract.state) + self._metadata_count(contract)
         self.report["system_contracts"][name] = entry
+
+    def copy_unset_system_state(self, name: str, state: dict[str, Any]) -> tuple[int, dict]:
+        copied, conflicts = 0, {}
+        for variable, value in state.items():
+            key = f"{name}{INDEX_SEPARATOR}{variable}"
+            current = self.driver.get(key)
+            if current is not None:
+                if encode(current) != encode(value):
+                    conflicts[variable] = {
+                        "bundle": _jsonable(current),
+                        "legacy": _jsonable(value),
+                    }
+                continue
+            self.set(key, value)
+            copied += 1
+        return copied, conflicts
 
     def migrate_currency(self, contract: LegacyContract, entry: dict[str, Any]) -> None:
         state = contract.state
@@ -502,24 +521,19 @@ class _Builder:
         }
 
         for account, value in balances.items():
-            self.set(f"{CURRENCY_CONTRACT}{INDEX_SEPARATOR}balances{DELIMITER}{account}", value)
+            self.set(
+                f"{CURRENCY_CONTRACT}{INDEX_SEPARATOR}balances{DELIMITER}{account}",
+                value,
+            )
         for pair, value in allowances.items():
             self.set(f"{CURRENCY_CONTRACT}{INDEX_SEPARATOR}approvals{DELIMITER}{pair}", value)
         entry["balances"] = len(balances)
         entry["allowances_moved_to_approvals"] = len(allowances)
 
-        other_copied, conflicts = 0, {}
-        for variable, value in state.items():
-            if variable.startswith(f"balances{DELIMITER}"):
-                continue
-            key = f"{CURRENCY_CONTRACT}{INDEX_SEPARATOR}{variable}"
-            current = self.driver.get(key)
-            if current is not None:
-                if encode(current) != encode(value):
-                    conflicts[variable] = {"bundle": _jsonable(current), "legacy": _jsonable(value)}
-                continue
-            self.set(key, value)
-            other_copied += 1
+        other_state = {
+            key: value for key, value in state.items() if not key.startswith(f"balances{DELIMITER}")
+        }
+        other_copied, conflicts = self.copy_unset_system_state(CURRENCY_CONTRACT, other_state)
         entry["other_keys_copied"] = other_copied
         if conflicts:
             entry["bundle_value_kept"] = conflicts
@@ -563,7 +577,10 @@ class _Builder:
 
     def retire_contract(self, contract: LegacyContract) -> None:
         self.accounted_keys += len(contract.state) + self._metadata_count(contract)
-        entry: dict[str, Any] = {"policy": "retired", "dropped_state_keys": len(contract.state)}
+        entry: dict[str, Any] = {
+            "policy": "retired",
+            "dropped_state_keys": len(contract.state),
+        }
         if contract.name == LEGACY_VALIDATOR_CONTRACT:
             entry["legacy_nodes"] = contract.state.get("nodes")
         if contract.name == "stamp_cost":
@@ -571,6 +588,27 @@ class _Builder:
         self.report["system_contracts"][contract.name] = entry
 
     # -- invariants --
+
+    def migrate_contracts(self, bundle_contracts: set[str]) -> None:
+        failures: dict[str, str] = {}
+        for name, contract in sorted(self.export.contracts.items()):
+            try:
+                if name in LEGACY_RETIRED_CONTRACTS and name not in bundle_contracts:
+                    self.retire_contract(contract)
+                elif name in bundle_contracts:
+                    self.migrate_replaced_system_contract(contract)
+                else:
+                    self.install_user_contract(contract)
+            except (LegacySourceError, LegacyMigrationError) as exc:
+                failures[name] = str(exc)
+            except Exception as exc:  # noqa: BLE001 — collect diagnostics from multiple compiler backends
+                failures[name] = str(exc).splitlines()[0] if str(exc) else repr(exc)
+        if failures:
+            details = "\n".join(f"  {name}: {reason}" for name, reason in sorted(failures.items()))
+            raise LegacyMigrationError(
+                f"{len(failures)} legacy contracts could not be migrated. Supply a source "
+                f"override or skip them explicitly:\n{details}"
+            )
 
     def currency_supply(self) -> Decimal:
         prefix = f"{CURRENCY_CONTRACT}{INDEX_SEPARATOR}balances{DELIMITER}"
@@ -589,62 +627,8 @@ def _legacy_currency_supply(export: LegacyExport) -> Decimal:
     return _dsum(_as_decimal(value) for value in balances.values())
 
 
-def build_legacy_migration_genesis(
-    export: LegacyExport,
-    options: LegacyMigrationOptions,
-    *,
-    storage_home: Path | None = None,
-) -> LegacyMigrationResult:
-    if storage_home is None:
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            return build_legacy_migration_genesis(export, options, storage_home=Path(tmp_dir))
-
-    genesis_time = _normalize_genesis_time(options.genesis_time)
-    contracts_dir = resolve_contracts_dir(options.contracts_dir)
-    options.contracts_dir = contracts_dir
-    unknown = (set(options.source_overrides) | set(options.skip_contracts)) - set(export.contracts)
-    if unknown:
-        raise LegacyMigrationError(f"overrides/skips name unknown contracts: {sorted(unknown)}")
-
-    driver = Driver(storage_home=storage_home)
-    submission_time = _genesis_submission_time(genesis_time)
-    builder = _Builder(export, options, driver, submission_time)
-    validators = builder.resolve_validators()
-    founder_key = options.founder_private_key or DEFAULT_PRESET_GENESIS_PRIVATE_KEY
-
-    deploy_bundle_contracts(
-        driver,
-        founder_private_key=founder_key,
-        network=options.network,
-        contracts_dir=contracts_dir,
-        constructor_overrides=builder.constructor_overrides(validators),
-        runtime_features=options.runtime_features,
-        submission_time=submission_time,
-    )
-    bundle_contracts = set(driver.get_contract_files()) | {
-        name for name in export.contracts if driver.has_contract(name)
-    }
-
-    failures: dict[str, str] = {}
-    for name, contract in sorted(export.contracts.items()):
-        try:
-            if name in LEGACY_RETIRED_CONTRACTS and name not in bundle_contracts:
-                builder.retire_contract(contract)
-            elif name in bundle_contracts:
-                builder.migrate_replaced_system_contract(contract)
-            else:
-                builder.install_user_contract(contract)
-        except (LegacySourceError, LegacyMigrationError) as exc:
-            failures[name] = str(exc)
-        except Exception as exc:  # compiler diagnostics surface as generic errors
-            failures[name] = str(exc).splitlines()[0] if str(exc) else repr(exc)
-    if failures:
-        details = "\n".join(f"  {name}: {reason}" for name, reason in sorted(failures.items()))
-        raise LegacyMigrationError(
-            f"{len(failures)} legacy contracts could not be migrated. Supply a source "
-            f"override or skip them explicitly:\n{details}"
-        )
-
+def _migrate_ledger(builder: _Builder) -> Decimal:
+    export, options = builder.export, builder.options
     refunds = None
     if options.refund_masternode_holdings:
         refunds = builder.refund_masternode_holdings()
@@ -674,19 +658,41 @@ def build_legacy_migration_genesis(
     for sender, nonce in sorted(export.nonces.items()):
         builder.set(f"{Constants.NONCE_FILENAME}{INDEX_SEPARATOR}{sender}{DELIMITER}", nonce)
 
-    initial_height = (
-        options.initial_height if options.initial_height is not None else export.source_height + 1
-    )
-    if initial_height < 1:
-        raise LegacyMigrationError("initial_height must be at least 1")
-    abci_genesis = finalize_genesis_block(
-        driver,
-        founder_private_key=options.founder_private_key,
-        number=initial_height - 1,
-    )
-    if options.founder_private_key is None:
-        abci_genesis["origin"] = {"sender": "", "signature": ""}
+    return legacy_supply
 
+
+def _matching_contracts(entries: dict, field: str, value: Any = True) -> list[str]:
+    return sorted(name for name, entry in entries.items() if entry.get(field) == value)
+
+
+def _migration_summary(entries: dict, legacy_supply: Decimal, nonce_count: int) -> dict:
+    return {
+        "user_contracts_migrated": len(_matching_contracts(entries, "status", "migrated")),
+        "user_contracts_skipped": _matching_contracts(entries, "status", "skipped"),
+        "compat_rewritten": sorted(
+            name for name, entry in entries.items() if "compat_rewrites" in entry
+        ),
+        "collision_renamed": sorted(
+            name for name, entry in entries.items() if "collision_renames" in entry
+        ),
+        "source_overrides": _matching_contracts(entries, "source", "override"),
+        "currency_supply": str(legacy_supply),
+        "nonces_carried": nonce_count,
+        "contracts_with_float_values": sorted(
+            name for name, entry in entries.items() if entry.get("float_values")
+        ),
+    }
+
+
+def _migration_report(
+    builder: _Builder,
+    validators: list[LegacyValidator],
+    genesis_time: str,
+    initial_height: int,
+    app_hash: str,
+    legacy_supply: Decimal,
+) -> dict:
+    export, options = builder.export, builder.options
     contract_entries = builder.report["contracts"]
     report = {
         "schema": "xian-legacy-migration-report/v1",
@@ -703,31 +709,10 @@ def build_legacy_migration_genesis(
             "network_bundle": options.network,
             "genesis_time": genesis_time,
             "initial_height": initial_height,
-            "app_hash": abci_genesis["hash"],
+            "app_hash": app_hash,
             "validators": [v.__dict__ for v in validators],
         },
-        "summary": {
-            "user_contracts_migrated": sum(
-                1 for e in contract_entries.values() if e["status"] == "migrated"
-            ),
-            "user_contracts_skipped": sorted(
-                n for n, e in contract_entries.items() if e["status"] == "skipped"
-            ),
-            "compat_rewritten": sorted(
-                n for n, e in contract_entries.items() if "compat_rewrites" in e
-            ),
-            "collision_renamed": sorted(
-                n for n, e in contract_entries.items() if "collision_renames" in e
-            ),
-            "source_overrides": sorted(
-                n for n, e in contract_entries.items() if e.get("source") == "override"
-            ),
-            "currency_supply": str(legacy_supply),
-            "nonces_carried": len(export.nonces),
-            "contracts_with_float_values": sorted(
-                n for n, e in contract_entries.items() if e.get("float_values")
-            ),
-        },
+        "summary": _migration_summary(contract_entries, legacy_supply, len(export.nonces)),
         **builder.report,
     }
     report["contracts_reading_currency_balances"] = sorted(
@@ -742,6 +727,70 @@ def build_legacy_migration_genesis(
             "allowances there (they moved to currency.approvals): "
             + ", ".join(report["contracts_reading_currency_balances"])
         )
+
+    return report
+
+
+def build_legacy_migration_genesis(
+    export: LegacyExport,
+    options: LegacyMigrationOptions,
+    *,
+    storage_home: Path | None = None,
+) -> LegacyMigrationResult:
+    if storage_home is None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            return build_legacy_migration_genesis(export, options, storage_home=Path(tmp_dir))
+
+    genesis_time = normalize_genesis_time(options.genesis_time)
+    contracts_dir = Path(options.contracts_dir)
+    unknown = (set(options.source_overrides) | set(options.skip_contracts)) - set(export.contracts)
+    if unknown:
+        raise LegacyMigrationError(f"overrides/skips name unknown contracts: {sorted(unknown)}")
+
+    driver = Driver(storage_home=storage_home)
+    submission_time = parse_genesis_time(genesis_time)
+    builder = _Builder(export, options, driver, submission_time)
+    validators = builder.resolve_validators()
+    founder_key = options.founder_private_key or DEFAULT_PRESET_GENESIS_PRIVATE_KEY
+
+    deploy_bundle_contracts(
+        driver,
+        founder_private_key=founder_key,
+        network=options.network,
+        contracts_dir=contracts_dir,
+        constructor_overrides=builder.constructor_overrides(validators),
+        runtime_features=options.runtime_features,
+        submission_time=submission_time,
+    )
+    bundle_contracts = set(driver.get_contract_files()) | {
+        name for name in export.contracts if driver.has_contract(name)
+    }
+
+    builder.migrate_contracts(bundle_contracts)
+
+    legacy_supply = _migrate_ledger(builder)
+
+    initial_height = (
+        options.initial_height if options.initial_height is not None else export.source_height + 1
+    )
+    if initial_height < 1:
+        raise LegacyMigrationError("initial_height must be at least 1")
+    abci_genesis = finalize_genesis_block(
+        driver,
+        founder_private_key=options.founder_private_key,
+        number=initial_height - 1,
+    )
+    if options.founder_private_key is None:
+        abci_genesis["origin"] = {"sender": "", "signature": ""}
+
+    report = _migration_report(
+        builder,
+        validators,
+        genesis_time,
+        initial_height,
+        abci_genesis["hash"],
+        legacy_supply,
+    )
 
     migration_meta = {
         "source_chain_app_hash": export.source_hash,
@@ -801,6 +850,53 @@ def _verify_storage_identity(export: LegacyExport, report: dict[str, Any]) -> No
                 raise LegacyMigrationError(str(exc)) from exc
 
 
+def _verify_contract_values(
+    driver: Driver, export: LegacyExport, report: dict, problems: list[str]
+) -> int:
+    checked_values = 0
+    for name, entry in report["contracts"].items():
+        if entry.get("status") != "migrated":
+            continue
+        contract = export.contracts[name]
+        if not driver.has_contract(name) or driver.get_contract_ir(name) is None:
+            problems.append(f"contract {name} has no xian_vm_v1 artifacts")
+            continue
+        for variable, value in contract.state.items():
+            actual = driver.get(f"{name}{INDEX_SEPARATOR}{variable}")
+            # init_chain stores top-level floats as decimals; compare encodings
+            expected = ContractingDecimal(str(value)) if isinstance(value, float) else value
+            if encode(actual) != encode(expected):
+                problems.append(f"value {name}.{variable}")
+            checked_values += 1
+
+    return checked_values
+
+
+def _verify_currency_values(
+    driver: Driver, export: LegacyExport, report: dict, problems: list[str]
+) -> None:
+    currency = export.contracts.get(CURRENCY_CONTRACT)
+    if currency is not None:
+        balances, allowances = _currency_balance_entries(currency.state)
+        refunds = (
+            report["system_contracts"]
+            .get(LEGACY_VALIDATOR_CONTRACT, {})
+            .get("holdings_refunded_to_depositors", {})
+        )
+        refund_total = _dsum(Decimal(v) for v in refunds.values())
+        for account, value in balances.items():
+            expected = _EXACT.add(_as_decimal(value), Decimal(refunds.get(account, "0")))
+            if account == LEGACY_VALIDATOR_CONTRACT:
+                expected = _EXACT.subtract(expected, refund_total)
+            actual = driver.get(f"{CURRENCY_CONTRACT}{INDEX_SEPARATOR}balances{DELIMITER}{account}")
+            if _as_decimal(actual if actual is not None else 0) != expected:
+                problems.append(f"balance {account}")
+        for pair, value in allowances.items():
+            actual = driver.get(f"{CURRENCY_CONTRACT}{INDEX_SEPARATOR}approvals{DELIMITER}{pair}")
+            if encode(actual) != encode(value):
+                problems.append(f"allowance {pair}")
+
+
 def verify_migration_genesis(
     genesis: dict[str, Any],
     export: LegacyExport,
@@ -838,42 +934,9 @@ def verify_migration_genesis(
         if driver.get(key) != nonce:
             problems.append(f"nonce {sender}")
 
-    checked_values = 0
-    for name, entry in report["contracts"].items():
-        if entry.get("status") != "migrated":
-            continue
-        contract = export.contracts[name]
-        if not driver.has_contract(name) or driver.get_contract_ir(name) is None:
-            problems.append(f"contract {name} has no xian_vm_v1 artifacts")
-            continue
-        for variable, value in contract.state.items():
-            actual = driver.get(f"{name}{INDEX_SEPARATOR}{variable}")
-            # init_chain stores top-level floats as decimals; compare encodings
-            expected = ContractingDecimal(str(value)) if isinstance(value, float) else value
-            if encode(actual) != encode(expected):
-                problems.append(f"value {name}.{variable}")
-            checked_values += 1
+    checked_values = _verify_contract_values(driver, export, report, problems)
 
-    currency = export.contracts.get(CURRENCY_CONTRACT)
-    if currency is not None:
-        balances, allowances = _currency_balance_entries(currency.state)
-        refunds = (
-            report["system_contracts"]
-            .get(LEGACY_VALIDATOR_CONTRACT, {})
-            .get("holdings_refunded_to_depositors", {})
-        )
-        refund_total = _dsum(Decimal(v) for v in refunds.values())
-        for account, value in balances.items():
-            expected = _EXACT.add(_as_decimal(value), Decimal(refunds.get(account, "0")))
-            if account == LEGACY_VALIDATOR_CONTRACT:
-                expected = _EXACT.subtract(expected, refund_total)
-            actual = driver.get(f"{CURRENCY_CONTRACT}{INDEX_SEPARATOR}balances{DELIMITER}{account}")
-            if _as_decimal(actual if actual is not None else 0) != expected:
-                problems.append(f"balance {account}")
-        for pair, value in allowances.items():
-            actual = driver.get(f"{CURRENCY_CONTRACT}{INDEX_SEPARATOR}approvals{DELIMITER}{pair}")
-            if encode(actual) != encode(value):
-                problems.append(f"allowance {pair}")
+    _verify_currency_values(driver, export, report, problems)
 
     if problems:
         preview = ", ".join(problems[:20])

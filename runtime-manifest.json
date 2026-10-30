@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "purpose": "Offline migration development/rehearsal baseline; not an accepted launch manifest",
+  "repos": {
+    "xian-abci": {
+      "url": "https://github.com/xian-technology/xian-abci",
+      "commit": "4bbd9fef3478d54a81d01ac855d0926b13ce47b6"
+    },
+    "xian-contracting": {
+      "url": "https://github.com/xian-technology/xian-contracting",
+      "commit": "fd49a34fadc10c6d611b7a318bc2e5326bdc6220"
+    },
+    "xian-configs": {
+      "url": "https://github.com/xian-technology/xian-configs",
+      "commit": "16bb62c3d6ef564e8488f1669f6682e1c5022632"
+    }
+  },
+  "python": "3.14",
+  "rust": "1.99.1"
+}
