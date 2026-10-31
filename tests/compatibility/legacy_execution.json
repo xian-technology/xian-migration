@@ -1,0 +1,111 @@
+{
+  "compiled": {
+    "con_migration_helper": "@__export('con_migration_helper')\ndef append(values: list):\n    values.append(9)\n    return values",
+    "con_migration_probe": "import con_migration_helper\n__state = Hash(default_value=0, contract='con_migration_probe', name='state')\n__Changed = LogEvent(event='Changed', params={'value': {'type': int}}, contract='con_migration_probe', name='Changed')\n\ndef ____():\n    __state['total'] = 999\n\ndef __record(value):\n    __state['calls'] += 1\n    return value\n\n@__export('con_migration_probe')\ndef apply(amount: int):\n    __state['total'] += amount\n    __Changed({'value': __state['total']})\n    assert amount > 0, 'amount must be positive'\n    return __state['total']\n\n@__export('con_migration_probe')\ndef aliases():\n    value = []\n    copied = [value].copy()\n    returned = con_migration_helper.append(values=value)\n    result = [copied[0] is value, returned is value, value]\n    __state['aliases'] = result\n    return result\n\n@__export('con_migration_probe')\ndef iterators():\n    lazy = map(__record, [0, 1, 2])\n    before = __state['calls']\n    first = all(lazy)\n    middle = __state['calls']\n    remaining = list(lazy)\n    return [before, first, middle, remaining, list(lazy)]\n\n@__export('con_migration_probe')\ndef builtins():\n    return [min([], default=9), sorted([1, 3, 2], reverse=True), int('0xff', 0), True + 2, hashlib.sha256('hello')]"
+  },
+  "observations": [
+    {
+      "status_code": 0,
+      "writes": {
+        "con_migration_probe.state:total": 10
+      },
+      "events": [
+        {
+          "contract": "con_migration_probe",
+          "event": "Changed",
+          "signer": "alice",
+          "caller": "alice",
+          "data_indexed": {},
+          "data": {
+            "value": 10
+          }
+        }
+      ],
+      "result": 10
+    },
+    {
+      "status_code": 0,
+      "writes": {
+        "con_migration_probe.state:aliases": [
+          true,
+          true,
+          [
+            9
+          ]
+        ]
+      },
+      "events": [],
+      "result": [
+        true,
+        true,
+        [
+          9
+        ]
+      ]
+    },
+    {
+      "status_code": 0,
+      "writes": {
+        "con_migration_probe.state:calls": 3
+      },
+      "events": [],
+      "result": [
+        0,
+        false,
+        1,
+        [
+          1,
+          2
+        ],
+        []
+      ]
+    },
+    {
+      "status_code": 0,
+      "writes": {},
+      "events": [],
+      "result": [
+        9,
+        [
+          3,
+          2,
+          1
+        ],
+        255,
+        3,
+        "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+      ]
+    },
+    {
+      "status_code": 1,
+      "writes": {},
+      "events": []
+    },
+    {
+      "status_code": 0,
+      "writes": {
+        "con_migration_probe.state:total": 12
+      },
+      "events": [
+        {
+          "contract": "con_migration_probe",
+          "event": "Changed",
+          "signer": "alice",
+          "caller": "alice",
+          "data_indexed": {},
+          "data": {
+            "value": 12
+          }
+        }
+      ],
+      "result": 12
+    }
+  ],
+  "revision": "3b82001f2d587bbfb51f3d9235a2a8dcd0078a9a",
+  "python": "3.12.10",
+  "dependency_lock_sha256": "d6e2fc9493ba30f7eeda91769f3c3c74e398197127996c3de2d6e98d9fced726",
+  "inputs": {
+    "observe.py": "212a8f93d44e570fb43a9937c42c56f6d218ec3cd3b27236667d818777968b31",
+    "contracts.json": "b3e0824e6a3846fb0f14ad50e139224b81bfc8949fcec20f1fa082388d8a55b0"
+  }
+}

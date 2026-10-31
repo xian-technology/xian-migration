@@ -143,3 +143,25 @@ repair those differences; operators must decide their treatment separately.
 - **Genesis size.** Contract IR makes the genesis large (about 62 MB for
   `xian-1`). CometBFT's `/genesis` RPC refuses files over 16 MB, so clients
   must use `/genesis_chunked`.
+
+## Execution compatibility evidence
+
+The regression corpus in `tests/compatibility/` captures authored source through
+an independently installed pre-VM runtime at
+`3b82001f2d587bbfb51f3d9235a2a8dcd0078a9a` (Python3.12.10 and that revision’s lock).
+The capture records the actual transformed legacy code, successful and failed
+export calls, results, writes and events. Its inputs are SHA-256 bound.
+
+The migration test imports that transformed code as an export, runs the real
+source-recovery and genesis pipeline, loads the resulting native artifacts, and
+replays the calls. It checks preserved state without constructor re-execution,
+imported mutable references, lazy iteration, builtin behavior, hashing aliases,
+events, and rollback followed by another successful transaction.
+
+Regenerate with `python scripts/capture-execution-baseline.py` using the sibling
+contracting repository’s pinned Git object. Do not replace expected outputs with
+current-runtime results. This synthetic corpus is evidence for its covered
+behavior, not approval of arbitrary deployed contracts. Real cutovers still
+require representative calls against the authenticated export. Mismatches need
+a reviewed source override or an explicit exclusion and caller review; successful
+compilation alone does not justify accepting different business behavior.

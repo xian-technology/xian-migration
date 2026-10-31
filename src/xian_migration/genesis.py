@@ -110,6 +110,7 @@ class LegacyContract:
     owner: Any = None
     developer: Any = None
     submitted: Any = None
+    metadata_entry_count: int = 0
     # variable path after "<contract>." (e.g. "balances:abc") -> value
     state: dict[str, Any] = field(default_factory=dict)
 
@@ -163,6 +164,7 @@ def _parse_contracts(entries: list[dict[str, Any]]) -> dict[str, LegacyContract]
             contract.state[variable] = value
         else:
             setattr(contract, field_name, value)
+            contract.metadata_entry_count += 1
 
     _require_contract_code(contracts)
     if not contracts:
@@ -465,9 +467,7 @@ class _Builder:
 
     @staticmethod
     def _metadata_count(contract: LegacyContract) -> int:
-        return 1 + sum(
-            value is not None for value in (contract.owner, contract.developer, contract.submitted)
-        )
+        return contract.metadata_entry_count
 
     # -- system contracts --
 
