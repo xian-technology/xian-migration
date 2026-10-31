@@ -21,6 +21,17 @@ actual application flows and authenticated exports before a cutover. The runtime
 quantum/type behavior, Unicode numeric text, dictionary mutation, bulk Hash
 operations, additional methods and starred syntax. Preserve application-level
 rehearsals for these operations even with the runtime regression coverage.
-General fractional raw Decimal powers, non-finite values and additional Decimal
-methods require a separate compatibility decision; do not infer complete Python
-Decimal parity from the finite-core fixes.
+The pinned runtime now implements R17: general raw Decimal powers, in-memory
+non-finite values, Decimal methods and DecimalTuple behavior within explicit
+resource bounds. Arithmetic uses the historical 91-digit context; exact raw
+construction has separate operand limits. Ordinary power limits each operand to
+1,024 coefficient digits, and integer/modular power limits exponent extent
+(digits + exponent) to 512. Non-finite values remain invalid in persisted state.
+A recovered-contract regression covers fractional power, quantization, tuple
+fields, rejected non-finite storage, rollback and a successful follow-up call.
+
+This bounded compatibility implementation does not approve production migration
+of arbitrary Decimal-dependent applications. Review actual application inputs
+against the runtime limits and preserve authenticated export rehearsals and
+all acceptance decisions above. Unsupported input sizes or business-behavior
+mismatches still need a reviewed override or an explicit exclusion.

@@ -165,3 +165,11 @@ behavior, not approval of arbitrary deployed contracts. Real cutovers still
 require representative calls against the authenticated export. Mismatches need
 a reviewed source override or an explicit exclusion and caller review; successful
 compilation alone does not justify accepting different business behavior.
+
+The separate Decimal migration regression recovers a synthetic contract and
+exercises general raw powers, quantization and DecimalTuple fields. It also
+checks that attempting to persist a non-finite result rolls back earlier writes
+and leaves the contract usable for a later call. The pinned runtime implements
+these operations within explicit resource limits; compare real application
+inputs with those limits during rehearsal. This additional synthetic check does
+not settle the production acceptance decisions in the backlog.
