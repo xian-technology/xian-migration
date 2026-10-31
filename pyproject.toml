@@ -10,12 +10,12 @@ readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.14,<3.15"
 dependencies = [
-  "xian-tech-abci[vm] @ git+https://github.com/xian-technology/xian-abci@0f6bd9800c19e5463374c1225fe67a44cdd3c170",
-  "xian-tech-contracting @ git+https://github.com/xian-technology/xian-contracting@6ea196ee877e1c798f2ab58c2a915fb49599c710",
-  "xian-tech-accounts @ git+https://github.com/xian-technology/xian-contracting@6ea196ee877e1c798f2ab58c2a915fb49599c710#subdirectory=packages/xian-accounts",
-  "xian-tech-runtime-types @ git+https://github.com/xian-technology/xian-contracting@6ea196ee877e1c798f2ab58c2a915fb49599c710#subdirectory=packages/xian-runtime-types",
-  "xian-tech-compiler-core @ git+https://github.com/xian-technology/xian-contracting@6ea196ee877e1c798f2ab58c2a915fb49599c710#subdirectory=packages/xian-compiler-core",
-  "xian-tech-vm-core @ git+https://github.com/xian-technology/xian-contracting@6ea196ee877e1c798f2ab58c2a915fb49599c710#subdirectory=packages/xian-vm-core",
+  "xian-tech-abci[vm] @ git+https://github.com/xian-technology/xian-abci@49fd168f85edd20b57aa4003a522da2969029bf1",
+  "xian-tech-contracting @ git+https://github.com/xian-technology/xian-contracting@005a104806d02c8fb4568d033dc9bc770d537210",
+  "xian-tech-accounts @ git+https://github.com/xian-technology/xian-contracting@005a104806d02c8fb4568d033dc9bc770d537210#subdirectory=packages/xian-accounts",
+  "xian-tech-runtime-types @ git+https://github.com/xian-technology/xian-contracting@005a104806d02c8fb4568d033dc9bc770d537210#subdirectory=packages/xian-runtime-types",
+  "xian-tech-compiler-core @ git+https://github.com/xian-technology/xian-contracting@005a104806d02c8fb4568d033dc9bc770d537210#subdirectory=packages/xian-compiler-core",
+  "xian-tech-vm-core @ git+https://github.com/xian-technology/xian-contracting@005a104806d02c8fb4568d033dc9bc770d537210#subdirectory=packages/xian-vm-core",
 ]
 
 [project.scripts]

@@ -4,11 +4,11 @@
   "repos": {
     "xian-abci": {
       "url": "https://github.com/xian-technology/xian-abci",
-      "commit": "0f6bd9800c19e5463374c1225fe67a44cdd3c170"
+      "commit": "49fd168f85edd20b57aa4003a522da2969029bf1"
     },
     "xian-contracting": {
       "url": "https://github.com/xian-technology/xian-contracting",
-      "commit": "6ea196ee877e1c798f2ab58c2a915fb49599c710"
+      "commit": "005a104806d02c8fb4568d033dc9bc770d537210"
     },
     "xian-configs": {
       "url": "https://github.com/xian-technology/xian-configs",
