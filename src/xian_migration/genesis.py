@@ -28,6 +28,7 @@ import json
 import re
 import tempfile
 from collections import defaultdict
+from copy import deepcopy
 from dataclasses import dataclass, field
 from decimal import Context, Decimal, Inexact, InvalidOperation, Overflow
 from pathlib import Path
@@ -342,7 +343,7 @@ class _Builder:
         self.report["warnings"].append(message)
 
     def set(self, key: str, value: Any) -> None:
-        self.driver.set(key, value, enforce_write_cap=False)
+        self.driver.apply_writes({key: deepcopy(value)})
 
     # -- validators and constructor overrides --
 
@@ -828,11 +829,8 @@ class _ReplayNonces:
         self.driver = driver
 
     def set_nonce(self, sender: str, value: int) -> None:
-        self.driver.set(
-            f"{Constants.NONCE_FILENAME}{INDEX_SEPARATOR}{sender}{DELIMITER}",
-            value,
-            enforce_write_cap=False,
-        )
+        key = f"{Constants.NONCE_FILENAME}{INDEX_SEPARATOR}{sender}{DELIMITER}"
+        self.driver.apply_writes({key: value})
 
 
 def _verify_storage_identity(export: LegacyExport, report: dict[str, Any]) -> None:
