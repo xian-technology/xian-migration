@@ -119,8 +119,11 @@ records the legacy app hash, height and export SHA-256 under
 
 Before writing output, the tool replays the genesis the way `InitChain` does
 (after a JSON round trip) and checks the state root, every nonce, every user
-contract's artifacts and state values, and every balance and allowance. It
-also rejects automatic recovery of storage-binding collisions and reports
+contract's artifacts and state values, and the complete balance and allowance
+ledger, including refund recipients without a previous balance. Unexpected
+nonzero balances, unexpected allowances, and inconsistent supply metadata fail
+verification even when the genesis has a self-consistent app hash. An absent
+balance and an explicit zero balance are equivalent. The verifier also rejects automatic recovery of storage-binding collisions and reports
 from older migrations that moved storage keys; rebuild those with reviewed
 overrides. Native regression tests cover both owning-contract and foreign
 reads after an override that preserves storage identity.

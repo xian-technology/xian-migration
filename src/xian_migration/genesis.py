@@ -870,29 +870,52 @@ def _verify_contract_values(
     return checked_values
 
 
+def _currency_hash_entries(driver: Driver, variable: str) -> dict[str, Any]:
+    prefix = f"{CURRENCY_CONTRACT}{INDEX_SEPARATOR}{variable}{DELIMITER}"
+    return {key[len(prefix) :]: value for key, value in driver.items(prefix).items()}
+
+
+def _balance_or_zero(value: Any) -> Decimal:
+    return _as_decimal(0 if value is None else value)
+
+
+def _refunded_balances(balances: dict[str, Any], refunds: dict[str, str]) -> dict[str, Decimal]:
+    expected = {account: _as_decimal(value) for account, value in balances.items()}
+    for account, amount in refunds.items():
+        expected[account] = _EXACT.add(expected.get(account, Decimal(0)), Decimal(amount))
+    expected[LEGACY_VALIDATOR_CONTRACT] = _EXACT.subtract(
+        expected.get(LEGACY_VALIDATOR_CONTRACT, Decimal(0)),
+        _dsum(Decimal(amount) for amount in refunds.values()),
+    )
+    return expected
+
+
 def _verify_currency_values(
     driver: Driver, export: LegacyExport, report: dict, problems: list[str]
 ) -> None:
     currency = export.contracts.get(CURRENCY_CONTRACT)
-    if currency is not None:
-        balances, allowances = _currency_balance_entries(currency.state)
-        refunds = (
-            report["system_contracts"]
-            .get(LEGACY_VALIDATOR_CONTRACT, {})
-            .get("holdings_refunded_to_depositors", {})
-        )
-        refund_total = _dsum(Decimal(v) for v in refunds.values())
-        for account, value in balances.items():
-            expected = _EXACT.add(_as_decimal(value), Decimal(refunds.get(account, "0")))
-            if account == LEGACY_VALIDATOR_CONTRACT:
-                expected = _EXACT.subtract(expected, refund_total)
-            actual = driver.get(f"{CURRENCY_CONTRACT}{INDEX_SEPARATOR}balances{DELIMITER}{account}")
-            if _as_decimal(actual if actual is not None else 0) != expected:
-                problems.append(f"balance {account}")
-        for pair, value in allowances.items():
-            actual = driver.get(f"{CURRENCY_CONTRACT}{INDEX_SEPARATOR}approvals{DELIMITER}{pair}")
-            if encode(actual) != encode(value):
-                problems.append(f"allowance {pair}")
+    if currency is None:
+        return
+    balances, allowances = _currency_balance_entries(currency.state)
+    refunds = (
+        report["system_contracts"]
+        .get(LEGACY_VALIDATOR_CONTRACT, {})
+        .get("holdings_refunded_to_depositors", {})
+    )
+    expected_balances = _refunded_balances(balances, refunds)
+    actual_balances = _currency_hash_entries(driver, "balances")
+    for account in sorted(expected_balances.keys() | actual_balances.keys()):
+        if _balance_or_zero(actual_balances.get(account)) != expected_balances.get(account, 0):
+            problems.append(f"balance {account}")
+
+    actual_allowances = _currency_hash_entries(driver, "approvals")
+    for pair in sorted(allowances.keys() | actual_allowances.keys()):
+        if encode(actual_allowances.get(pair)) != encode(allowances.get(pair)):
+            problems.append(f"allowance {pair}")
+
+    supply = driver.get(f"{CURRENCY_CONTRACT}{INDEX_SEPARATOR}metadata{DELIMITER}total_supply")
+    if _balance_or_zero(supply) != _legacy_currency_supply(export):
+        problems.append("currency supply metadata")
 
 
 def verify_migration_genesis(

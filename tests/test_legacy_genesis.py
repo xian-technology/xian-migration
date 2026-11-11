@@ -289,6 +289,11 @@ class MigrationVerificationTests(unittest.TestCase):
     def setUpClass(cls):
         data = _legacy_export_data()
         data["genesis"].append({"key": "currency.balances:empty_account", "value": 0})
+        cls.refund_only = "d" * 64
+        next(
+            entry for entry in data["genesis"] if entry["key"] == f"masternodes.holdings:{HOLDER}"
+        )["value"] = 75000
+        data["genesis"].append({"key": f"masternodes.holdings:{cls.refund_only}", "value": 25000})
         cls.export = parse_legacy_export(decode(encode(data)))
         cls.result = build_legacy_migration_genesis(cls.export, _options())
 
@@ -300,12 +305,59 @@ class MigrationVerificationTests(unittest.TestCase):
         if remove:
             entries[:] = [entry for entry in entries if entry["key"] != key]
         else:
-            next(entry for entry in entries if entry["key"] == key)["value"] = value
+            existing = next((entry for entry in entries if entry["key"] == key), None)
+            if existing is None:
+                entries.append({"key": key, "value": value})
+            else:
+                existing["value"] = value
         # A valid app hash is necessary but does not prove migration fidelity.
         root = compute_exported_state_root(genesis["abci_genesis"]).hex()
         genesis["abci_genesis"]["hash"] = root
         genesis["app_hash"] = root
         return genesis
+
+    def test_changed_refund_only_balance_is_rejected_with_consistent_hash(self):
+        genesis = self.changed_genesis(f"currency.balances:{self.refund_only}", 1)
+        with self.assertRaisesRegex(LegacyMigrationError, f"balance {self.refund_only}"):
+            verify_migration_genesis(genesis, self.export, self.result.report)
+
+    def test_missing_refund_only_balance_is_rejected_with_consistent_hash(self):
+        genesis = self.changed_genesis(f"currency.balances:{self.refund_only}", remove=True)
+        with self.assertRaisesRegex(LegacyMigrationError, f"balance {self.refund_only}"):
+            verify_migration_genesis(genesis, self.export, self.result.report)
+
+    def test_introduced_balance_is_rejected_with_consistent_hash(self):
+        genesis = self.changed_genesis("currency.balances:unexpected_holder", 1)
+        with self.assertRaisesRegex(LegacyMigrationError, "balance unexpected_holder"):
+            verify_migration_genesis(genesis, self.export, self.result.report)
+
+    def test_introduced_allowance_is_rejected_with_consistent_hash(self):
+        genesis = self.changed_genesis("currency.approvals:unexpected_owner:spender", 1)
+        with self.assertRaisesRegex(LegacyMigrationError, "allowance unexpected_owner:spender"):
+            verify_migration_genesis(genesis, self.export, self.result.report)
+
+    def test_changed_supply_metadata_is_rejected_with_consistent_hash(self):
+        genesis = self.changed_genesis("currency.metadata:total_supply", 1)
+        with self.assertRaisesRegex(LegacyMigrationError, "currency supply metadata"):
+            verify_migration_genesis(genesis, self.export, self.result.report)
+
+    def test_introduced_zero_balance_is_equivalent_to_absent_balance(self):
+        genesis = self.changed_genesis("currency.balances:unexpected_empty_holder", 0)
+        verification = verify_migration_genesis(genesis, self.export, self.result.report)
+        self.assertEqual(verification["app_hash"], genesis["app_hash"])
+
+    def test_export_without_registration_escrow_verifies(self):
+        data = _legacy_export_data()
+        data["genesis"] = [
+            entry
+            for entry in data["genesis"]
+            if entry["key"] != "currency.balances:masternodes"
+            and not entry["key"].startswith("masternodes.holdings:")
+        ]
+        export = parse_legacy_export(decode(encode(data)))
+        result = build_legacy_migration_genesis(export, _options())
+        verification = verify_migration_genesis(result.genesis, export, result.report)
+        self.assertEqual(verification["app_hash"], result.genesis["app_hash"])
 
     def test_changed_user_state_is_rejected_even_with_consistent_hash(self):
         genesis = self.changed_genesis(f"con_tok.balances:{HOLDER}", 99)
