@@ -1,7 +1,8 @@
 # xian-migration
 
 Offline tooling for converting an exported legacy Xian chain into a genesis
-for the current VM. It recovers contract source, recompiles contracts, carries
+for the pinned V1 VM. Fresh V2 networks start from their own genesis; this tool
+does not convert legacy state to the V2 numeric profile. It recovers contract source, recompiles contracts, carries
 state and nonces, and verifies the resulting genesis by replaying its state.
 Nodes do not install or depend on this tool.
 
