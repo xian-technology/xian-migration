@@ -3,8 +3,8 @@
 Install the pinned standalone package as described in the root README.
 The target network, contracts directory and runtime features are explicit CLI inputs.
 
-`xian-legacy-genesis` builds a `genesis.json` for this runtime from the state of
-a legacy (pre-VM, CPython-engine) Xian chain. The legacy node's
+`xian-legacy-genesis` builds a `genesis.json` for the pinned V1 test configuration
+from the state of a legacy (pre-VM, CPython-engine) Xian chain. The legacy node's
 `xian/tools/export_state.py` writes the input, `exported_state.json`: every
 contract key/value pair (`genesis`) plus every sender nonce (`nonces`).
 
