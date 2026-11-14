@@ -11,6 +11,7 @@ Extracted from `xian-technology/xian-abci` at commit
 The initial import preserves the repaired source, tests and migration guide.
 Subsequent extraction changes move modules into `xian_migration`, replace
 private genesis imports with public APIs, and make runtime inputs explicit.
-The upstream Apache-2.0 license is retained. No live exports, keys or chain
-state are included. This repository retains the migration implementation after
-the temporary ABCI branch is removed.
+The upstream code was Apache-2.0 at extraction; the project owner has since
+relicensed both `xian-abci` and this repository under MIT (see `LICENSE`). No
+live exports, keys or chain state are included. This repository retains the
+migration implementation after the temporary ABCI branch is removed.
