@@ -408,7 +408,7 @@ class _Builder:
                 entry["collision_renames"] = recovered.collision_renames
         try:
             artifacts = build_contract_artifacts(
-                module_name=name, source=source, lint=True, vm_profile="xian_vm_v1"
+                module_name=name, source=source, vm_profile="xian_vm_v1"
             )
         except Exception as first_error:
             if override is not None or not self.options.compat_rewrites:
@@ -417,7 +417,7 @@ class _Builder:
             if not applied:
                 raise
             artifacts = build_contract_artifacts(
-                module_name=name, source=rewritten, lint=True, vm_profile="xian_vm_v1"
+                module_name=name, source=rewritten, vm_profile="xian_vm_v1"
             )
             entry["compat_rewrites"] = applied
             entry["compile_error_before_rewrite"] = str(first_error).splitlines()[0]

@@ -32,7 +32,7 @@ class RecoverLegacySourceTests(unittest.TestCase):
     def test_recovered_source_compiles_for_the_vm(self):
         source = recover_legacy_source("con_tok", LEGACY_TOKEN).source
         artifacts = build_contract_artifacts(
-            module_name="con_tok", source=source, lint=True, vm_profile="xian_vm_v1"
+            module_name="con_tok", source=source, vm_profile="xian_vm_v1"
         )
         self.assertTrue(artifacts["vm_ir_json"])
 
@@ -92,7 +92,7 @@ class RecoverLegacySourceTests(unittest.TestCase):
         self.assertEqual(recovered.collision_renames, {"__mean": "mean_private3"})
         self.assertIn("return mean_private3(mean) + mean_private + mean_private2", recovered.source)
         build_contract_artifacts(
-            module_name="con_m", source=recovered.source, lint=True, vm_profile="xian_vm_v1"
+            module_name="con_m", source=recovered.source, vm_profile="xian_vm_v1"
         )
 
     def test_variable_collision_also_preserves_storage_identity(self):
@@ -116,7 +116,7 @@ class RecoverLegacySourceTests(unittest.TestCase):
         self.assertEqual(recovered.collision_renames, {"__ledger": "ledger_store"})
         self.assertIn("return ledger_store['alice']", recovered.source)
         build_contract_artifacts(
-            module_name="con_f", source=recovered.source, lint=True, vm_profile="xian_vm_v1"
+            module_name="con_f", source=recovered.source, vm_profile="xian_vm_v1"
         )
 
 
@@ -174,15 +174,11 @@ class CompatRewriteTests(unittest.TestCase):
             "    assert i == 'x', f\"bad {data[i, 'contract']}.\"\n"
         )
         with self.assertRaises(Exception):
-            build_contract_artifacts(
-                module_name="con_f", source=source, lint=True, vm_profile="xian_vm_v1"
-            )
+            build_contract_artifacts(module_name="con_f", source=source, vm_profile="xian_vm_v1")
         rewritten, applied = apply_compat_rewrites(source, allowed={"fstring_string_literals"})
         self.assertEqual(applied, {"fstring_string_literals": 1})
         self.assertIn("'bad ' + str(data[i, 'contract']) + '.'", rewritten)
-        build_contract_artifacts(
-            module_name="con_f", source=rewritten, lint=True, vm_profile="xian_vm_v1"
-        )
+        build_contract_artifacts(module_name="con_f", source=rewritten, vm_profile="xian_vm_v1")
 
     def test_fstring_with_format_spec_is_left_alone(self):
         source = "@export\ndef f(i: str):\n    return f\"{i.strip('a'):>5}\"\n"
