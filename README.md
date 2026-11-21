@@ -62,7 +62,9 @@ uv run --locked pytest --cov=xian_migration --cov-report=term-missing
 
 Tests use synthetic state exports and temporary storage. They cover source
 recovery, balances, nonces, timestamps, reproducibility, storage identity, and
-the installed command-line workflow.
+the installed command-line workflow. The validation script installs from
+`uv.lock` into a disposable environment and tests the installed package.
+The editable environment from the quick start is available for development.
 
 ## Related Docs
 
