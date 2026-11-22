@@ -88,16 +88,17 @@ def _unrenamed_identifiers(tree: ast.Module, renames: dict[str, str]) -> set[str
 
 
 class _LegacyRestorer(ast.NodeTransformer):
-    def __init__(self, contract_name: str, renames: dict[str, str]):
+    def __init__(self, contract_name: str, renames: dict[str, str], constructor_name: str):
         self.contract_name = contract_name
         self.renames = renames
+        self.constructor_name = constructor_name
         self.constructors = 0
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> ast.FunctionDef:
         self.generic_visit(node)
         if node.name == LEGACY_CONSTRUCTOR_NAME:
             self.constructors += 1
-            node.name = RECOVERED_CONSTRUCTOR_NAME
+            node.name = self.constructor_name
             node.decorator_list = [ast.Name(id="construct", ctx=ast.Load())]
             return node
         if node.decorator_list:
@@ -221,7 +222,11 @@ def recover_legacy_source(
     _require_storage_identity(contract_name, tree, renames, collisions)
     collision_renames = _rename_colliding_bindings(tree, renames, untouched, collisions)
 
-    restorer = _LegacyRestorer(contract_name, renames)
+    taken = untouched | set(renames.values())
+    constructor_name = RECOVERED_CONSTRUCTOR_NAME
+    if constructor_name in taken:
+        constructor_name = _fresh_name(constructor_name, "constructor", taken)
+    restorer = _LegacyRestorer(contract_name, renames, constructor_name)
     tree = restorer.visit(tree)
     if restorer.constructors > 1:
         raise LegacySourceError(f"{contract_name}: legacy code has multiple constructors")

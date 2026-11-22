@@ -6,7 +6,7 @@ trap 'rm -rf -- "$validation_dir"' EXIT
 export UV_PROJECT_ENVIRONMENT="$validation_dir/venv"
 unset PYTHONPATH PYTHONHOME
 
-uv sync --locked --no-editable --group dev
+uv sync --locked --no-editable --group dev --reinstall-package xian-tech-migration
 uv run --no-sync ruff check .
 uv run --no-sync ruff format --check .
 uv run --no-sync pytest

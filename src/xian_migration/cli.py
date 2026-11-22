@@ -110,8 +110,7 @@ def build_parser() -> ArgumentParser:
     return parser
 
 
-def _options(args) -> LegacyMigrationOptions:
-    overrides = dict(_parse_override(value) for value in args.source_override)
+def _options(args, overrides: dict[str, Path]) -> LegacyMigrationOptions:
     return LegacyMigrationOptions(
         chain_id=args.chain_id,
         genesis_time=args.genesis_time,
@@ -134,30 +133,62 @@ def _options(args) -> LegacyMigrationOptions:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
-        options = _options(args)
-        export = load_legacy_export(Path(args.export), expected_sha256=args.export_sha256)
+        overrides = dict(_parse_override(value) for value in args.source_override)
+        options = _options(args, overrides)
+        export_path = Path(args.export)
+        export = load_legacy_export(export_path, expected_sha256=args.export_sha256)
         result = build_legacy_migration_genesis(export, options)
         verification = verify_migration_genesis(result.genesis, export, result.report)
+        _write_outputs(args, result, verification, [export_path, *overrides.values()])
     except (LegacyMigrationError, ValueError, OSError) as exc:
         print(f"legacy migration failed: {exc}", file=sys.stderr)
         return 1
 
-    _write_outputs(args, result, verification)
     return 0
 
 
-def _write_outputs(args, result, verification) -> None:
+def _file_identity(path: Path) -> Path | tuple[int, int]:
+    try:
+        stat = path.stat()
+    except FileNotFoundError:
+        return path.resolve()
+    return stat.st_dev, stat.st_ino
+
+
+def _validate_output_paths(outputs: list[tuple[str, Path, str]], inputs: list[Path]) -> None:
+    occupied = {_file_identity(path): f"input {path}" for path in inputs}
+    destinations = {path.resolve(): label for label, path, _ in outputs}
+    for label, path, _ in outputs:
+        identity = _file_identity(path)
+        if identity in occupied:
+            raise LegacyMigrationError(f"{label} path {path} overlaps {occupied[identity]}")
+        if path.is_dir():
+            raise LegacyMigrationError(f"{label} path {path} is a directory")
+        for parent in path.resolve().parents:
+            if parent in destinations:
+                raise LegacyMigrationError(f"{destinations[parent]} path {parent} contains {path}")
+        occupied[identity] = f"{label} path {path}"
+
+
+def _write_outputs(args, result, verification, inputs: list[Path]) -> None:
     result.report["verification"] = verification
     output = Path(args.output)
-    output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(encode(result.genesis), encoding="utf-8")
     report_path = Path(args.report) if args.report else output.with_suffix(".report.json")
-    report_path.write_text(json.dumps(result.report, indent=2, sort_keys=True), encoding="utf-8")
+    outputs = [
+        ("genesis", output, encode(result.genesis)),
+        ("report", report_path, json.dumps(result.report, indent=2, sort_keys=True)),
+    ]
     if args.sources_dir:
         sources_dir = Path(args.sources_dir)
-        sources_dir.mkdir(parents=True, exist_ok=True)
-        for name, source in sorted(result.recovered_sources.items()):
-            (sources_dir / f"{name}.py").write_text(source, encoding="utf-8")
+        outputs.extend(
+            ("recovered source", sources_dir / f"{name}.py", source)
+            for name, source in sorted(result.recovered_sources.items())
+        )
+    _validate_output_paths(outputs, inputs)
+    for _, path, _ in outputs:
+        path.parent.mkdir(parents=True, exist_ok=True)
+    for _, path, contents in outputs:
+        path.write_text(contents, encoding="utf-8")
 
     summary = result.report["summary"]
     print(f"genesis:   {output}")

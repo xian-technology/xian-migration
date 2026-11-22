@@ -36,6 +36,15 @@ class RecoverLegacySourceTests(unittest.TestCase):
         )
         self.assertTrue(artifacts["vm_ir_json"])
 
+    def test_constructor_recovery_preserves_a_seed_export(self):
+        legacy = "def ____():\n    pass\n@__export('con_named')\ndef seed():\n    return 3\n"
+        recovered = recover_legacy_source("con_named", legacy)
+        artifacts = build_contract_artifacts(
+            module_name="con_named", source=recovered.source, vm_profile="xian_vm_v1"
+        )
+        self.assertIn("@export\ndef seed():", artifacts["source"])
+        self.assertIn("@construct\n", artifacts["source"])
+
     def test_parameter_shadowing_a_privatized_name_is_refused(self):
         legacy = (
             "def __mean(v: list):\n    return v[0]\n\n\n"

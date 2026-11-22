@@ -36,15 +36,16 @@ def command(tmp_path, *, checksum=None, output_name="genesis.json"):
 
 def test_cli_builds_verified_reproducible_genesis(tmp_path):
     args = command(tmp_path)
+    sources_dir = tmp_path / "review" / "sources"
     result = subprocess.run(
-        args + ["--sources-dir", str(tmp_path / "sources")], capture_output=True, text=True
+        args + ["--sources-dir", str(sources_dir)], capture_output=True, text=True
     )
     assert result.returncode == 0, result.stderr
     genesis = json.loads((tmp_path / "genesis.json").read_text())
     report = json.loads((tmp_path / "genesis.report.json").read_text())
     assert report["verification"]["app_hash"] == genesis["app_hash"]
     assert report["verification"]["nonces_verified"] == 2
-    assert (tmp_path / "sources" / "con_tok.py").is_file()
+    assert (sources_dir / "con_tok.py").is_file()
     second = subprocess.run(
         command(tmp_path, output_name="again.json"), capture_output=True, text=True
     )
@@ -58,6 +59,28 @@ def test_cli_checksum_failure_writes_no_genesis(tmp_path):
     assert "sha256 mismatch" in result.stderr
     assert not (tmp_path / "genesis.json").exists()
     assert not (tmp_path / "genesis.report.json").exists()
+
+
+@pytest.mark.parametrize(
+    "collision", ["genesis", "export", "export-alias", "directory", "ancestor"]
+)
+def test_cli_rejects_report_path_collisions(tmp_path, collision):
+    args = command(tmp_path)
+    export = tmp_path / "export.json"
+    original_export = export.read_bytes()
+    report = tmp_path / f"{collision}.json"
+    if collision == "export-alias":
+        report.hardlink_to(export)
+    if collision == "directory":
+        report.mkdir()
+    if collision == "ancestor":
+        args[-1] = str(report / "genesis.json")
+    result = subprocess.run(args + ["--report", str(report)], capture_output=True, text=True)
+    assert result.returncode == 1
+    assert "report path" in result.stderr
+    assert not (tmp_path / "genesis.json").exists()
+    assert not (report / "genesis.json").exists()
+    assert export.read_bytes() == original_export
 
 
 def test_cli_explicit_overrides_and_validator_are_reported(tmp_path):

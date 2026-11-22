@@ -23,7 +23,9 @@ uv run xian-legacy-genesis \
 
 The command writes the genesis, a `genesis.report.json` covering every
 decision, and (optionally) the deployed source of every migrated contract for
-review. It exits non-zero without writing anything if any step fails.
+review. It verifies the genesis and checks that the artifact paths are distinct
+from each other, the input export, and source overrides before writing files.
+It exits non-zero if verification, path validation, or writing fails.
 
 ## Reproducibility
 
