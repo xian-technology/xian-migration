@@ -102,12 +102,11 @@ a fresh network. Legacy state is then layered on top:
 
 ### Nonces
 
-Each legacy nonce becomes `__n.<sender>:` with the same value. Both runtimes
-store the last *used* nonce, so the next valid nonce is unchanged. This also
-blocks replay of any pre-migration transaction. One behaviour changes: the
-legacy chain accepted any nonce greater than the last, while this runtime
-requires exactly the next one. Wallets must query the next nonce rather than
-skipping ahead.
+Each legacy nonce becomes `__n.<sender>:` with the same value. This preserves
+the last committed nonce for the sender. The archived V1 target used by this
+tool requires the next consecutive nonce. When rehearsing a balance import
+into a current V2 network instead, use that network's genesis and verify
+the intended committed nonce for every imported account.
 
 ### Heights
 
